@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebRTC Video Streaming </title>
+    <style>
+        video {
+            width: 100%;
+            max-width: 400px;
+            border: 1px solid black;
+        }
+    </style>
+</head>
+<body>
+    <h1>WebRTC Video Streaming</h1>
+    <video id="localVideo" autoplay playsinline muted></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+    <button id="joinButton">JOIN</button>
+
+    <script src="https://cdn.jsdelivr.net/npm/uuid@8.3.2/dist/umd/uuidv4.min.js"></script>
+    <script>
+        const localVideo = document.getElementById('localVideo');
+        const remoteVideo = document.getElementById('remoteVideo');
+        const joinButton = document.getElementById('joinButton');
+        let localStream;
+        let pc;
+        let ws;
+        const clientId = uuidv4(); 
+
+        joinButton.addEventListener('click', async () => {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = localStream;
+
+                const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+                pc = new RTCPeerConnection(configuration);
+
+                localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+                pc.oniceconnectionstatechange = event => {
+                    console.log('Peer Connection State:', event.target.iceConnectionState);
+                };
+
+                pc.onicecandidate = event => {
+                    if (event.candidate) {
+                        console.log('Generated ICE Candidate:', event.candidate);
+                        sendMessage({
+                            type: 'candidate',
+                            candidate: event.candidate,
+                            clientId: clientId
+                        });
+                    }
+                };
+
+                pc.ontrack = event => {
+                    remoteVideo.srcObject = event.streams[0];
+                };
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                sendMessage({ type: 'offer', sdp: pc.localDescription, clientId: clientId });
+
+                
+                ws.onmessage = async event => {
+                    console.log('Received message:', event.data);
+
+                    let message;
+                    try {
+                        message = JSON.parse(event.data);
+                    } catch (error) {
+                        console.error('Error parsing JSON message:', error);
+                        return;
+                    }
+
+                    if (message.type === 'offer') {
+                        await pc.setRemoteDescription(new RTCSessionDescription(message.sdp));
+                        const answer = await pc.createAnswer();
+                        await pc.setLocalDescription(answer);
+
+                        sendMessage({ type: 'answer', sdp: pc.localDescription, clientId: clientId });
+                    } else if (message.type === 'answer') {
+                        await pc.setRemoteDescription(new RTCSessionDescription(message.sdp));
+                    } else if (message.type === 'candidate') {
+                        if (message.candidate) {
+                            try {
+                                await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+                            } catch (e) {
+                                console.error('Error adding ICE candidate:', e);
+                            }
+                        }
+                    } else {
+                        console.error('Received an unexpected message:', message);
+                    }
+                };
+
+            } catch (error) {
+                console.error('Error accessing media devices:', error);
+            }
+        });
+
+        function sendMessage(message) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(message));
+            }
+        }
+
+        
+        ws = new WebSocket('ws://localhost:9003');
+
+       
+        window.onbeforeunload = () => {
+            ws.close();
+            pc.close();
+        };
+    </script>
+</body>
+</html>
